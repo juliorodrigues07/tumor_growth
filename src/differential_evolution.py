@@ -1,6 +1,7 @@
 from scipy.optimize import differential_evolution
 from scipy.integrate import solve_ivp
 from warnings import filterwarnings
+from pandas import read_csv
 from math import sqrt
 from os import getcwd
 from os import chdir
@@ -9,28 +10,39 @@ import numpy as np
 
 
 filterwarnings('ignore')
+delay = 0
+check = False
+steps = list()
 
 
 def ode_system(t, u, k1, k2, lambda_0, lambda_1):
 
-    z2 = u[0]
-    z3 = u[1]
-    z4 = u[2]
-    volume = u[3]
-    z1 = z2 + z3 + z4
+    global delay, check, cisplatin
 
-    cisplatin = 0
+    if delay == 2:
+        check = True
+
+    if check:
+        z2 = steps[0]
+        steps.pop(0)
+        delay = 1
+    else:
+        z2 = 0
+
+    z1 = u[0]
+    steps.append(u[1])
+    volume = u[2]
+
+    # Tumor growth function
     psi = 20
-
-    tgf = (lambda_0 * z1) / pow(pow(1 + lambda_0 * volume / lambda_1, psi), 1 / psi)
+    tgf = (lambda_0 * z1) / pow(1 + pow(lambda_0 * volume / lambda_1, psi), 1 / psi)
 
     dz1dt = tgf - k1 * cisplatin * z1
     dz2dt = k1 * cisplatin * z1 - k2 * z2
-    dz3dt = k2 * z2 - k2 * z3
-    dz4dt = k2 * z3 - k2 * z4
-    dvdt = dz1dt + dz2dt + dz3dt + dz4dt
+    dvdt = abs(dz1dt) + abs(dz2dt)
 
-    return [dz2dt, dz3dt, dz4dt, dvdt]
+    delay += 1
+    return [dz1dt, dz2dt, dvdt]
 
 
 def is_reference_time(times, ct):
@@ -44,13 +56,14 @@ def is_reference_time(times, ct):
 
 def solve(x):
 
-    global data, reference_times
+    global data, reference_times, delay, check
     dt = 0.01
     final_t = 50
     times = np.arange(0, final_t + dt, dt)
 
-    v, z2, z3, z4 = 500, 100, 200, 100
-    u = [z2, z3, z4, v]
+    z1, z2 = 82, 50
+    v = z1 + z2
+    u = [z1, z2, v]
 
     k1 = x[0]
     k2 = x[1]
@@ -62,24 +75,40 @@ def solve(x):
         return ode_system(t, y, *params)
 
     results = solve_ivp(solve_ode, (0, final_t), u, t_eval=times, method='Radau')
-    u = results.y[:4, :]
+    u = results.y[:3, :]
 
     i, j = 0, 0
-    v_error, v_sum = 0, 0
+    z1_error, z2_error, v_error = 0, 0, 0
+    z1_sum, z2_sum, v_sum = 0, 0, 0
 
     for t in times:
 
         if is_reference_time(reference_times, t):
 
-            v_data = data[i][4] + data[i][5] + data[i][6]
-            v_error += (u[0][j] - v_data) * (u[0][j] - v_data)
+            z1_data = data[i][5]
+            z2_data = data[i][4]
+            v_data = data[i][6]
+
+            z1_error += (u[0][j] - z1_data) * (u[0][j] - z1_data)
+            z2_error += (u[1][j] - z2_data) * (u[1][j] - z2_data)
+            v_error += (u[2][j] - v_data) * (u[2][j] - v_data)
+
+            z1_sum += z1_data * z1_data
+            z2_sum += z2_data * z2_data
             v_sum += v_data * v_data
 
             i += 1
         j += 1
 
+    delay = 0
+    check = False
+    steps.clear()
+
+    z1_error = sqrt(z1_error / z1_sum)
+    z2_error = sqrt(z2_error / z2_sum)
     v_error = sqrt(v_error / v_sum)
-    return v_error
+
+    return z1_error + z2_error + v_error
 
 
 def test_error(x, convergence):
@@ -92,39 +121,61 @@ if __name__ == "__main__":
 
     chdir('..')
 
-    global data, reference_times, error_list
-    data = np.loadtxt(f'{getcwd()}/datasets/test.csv', delimiter=',')
-    reference_times = data[:, 0]
+    global data, reference_times, error_list, cisplatin
 
-    error_list = list()
-    bounds = [
-        (0.01, 1), (0.01, 1), (0.01, 1), (0.01, 1)
-    ]
+    untreated_rats, solutions = list(), list()
+    dataset = read_csv(f'{getcwd()}/datasets/control_22aug.csv')
+    n_rats = dataset['ID'].max()
 
-    solution = differential_evolution(solve, bounds,
-                                      strategy='best1bin',
-                                      maxiter=30,
-                                      popsize=100,
-                                      atol=pow(10, -5),
-                                      tol=pow(10, -5),
-                                      mutation=0.2,
-                                      recombination=0.5,
-                                      disp=True,
-                                      workers=-1,
-                                      callback=test_error)
+    for i in range(1, n_rats + 1):
+        grouped = dataset.groupby(dataset['ID'])
+        rat = np.array(grouped.get_group(i))
+        untreated_rats.append(rat)
 
-    print(solution.x)
-    print(solution.success)
+    if n_rats == 21:
+        cisplatin = 0
+        print('ADJUSTING UNTREATED RATS DATASET\n')
+    else:
+        cisplatin = 5
+        print('ADJUSTING DAY 0 UNIQUE CISPLATIN DOSE TREATED RATS DATASET\n')
 
-    best = solution.x
-    error = solve(best)
+    for i in range(n_rats):
 
-    print(f'Error: {error}')
+        print(f'\nFITTING RAT {i + 1} DATA:\n')
+        data = untreated_rats[i]
+        reference_times = np.array([row[0] for row in untreated_rats[i]])
 
-    fig, ax = plt.subplots()
-    fig.set_size_inches(12, 8)
+        error_list = list()
+        bounds = [
+            (0.01, 1), (0.01, 1), (0.01, 1), (0.01, 1)
+        ]
 
-    ax.set(xlabel='Time', ylabel='Error', title='Error Evolution')
-    ax.plot(range(len(error_list)), error_list)
-    ax.grid()
-    plt.show()
+        solution = differential_evolution(solve, bounds,
+                                          strategy='best1bin',
+                                          maxiter=30,
+                                          popsize=100,
+                                          atol=pow(10, -3),
+                                          tol=pow(10, -3),
+                                          mutation=0.2,
+                                          recombination=0.5,
+                                          disp=True,
+                                          workers=6,
+                                          callback=test_error)
+
+        solutions.append(solution.x)
+        print(f'Parameters Solution: {solution.x}')
+        print(f'Converged: {"Yes" if solution.success else "No"}')
+
+        best = solution.x
+        error = solve(best)
+        print(f'Associated Error: {error}\n')
+
+    print(f'\nFinal Parameters: {np.mean(solutions, axis=0)}')
+
+    # fig, ax = plt.subplots()
+    # fig.set_size_inches(12, 8)
+    #
+    # ax.set(xlabel='Time', ylabel='Error', title='Error Evolution')
+    # ax.plot(range(len(error_list)), error_list)
+    # ax.grid()
+    # plt.show()

@@ -1,6 +1,6 @@
 [![Python 3.10.6](https://img.shields.io/badge/Python-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/downloads/release/python-3106/)
 # Tumor Growth
-Implementation of a mammary tumor growth ODE model in rats (PA from Computational Modeling course - DCOMP - UFSJ).  
+Implementation of a mammary tumor growth model in rats with Delay Differential Equations - _DDE_ (PA from Computational Modeling course - DCOMP - UFSJ).  
 
 # Requirements
 
